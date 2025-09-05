@@ -1,18 +1,34 @@
+local Camera = workspace.CurrentCamera
 local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
+local Mouse = game.Players.LocalPlayer:GetMouse()
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
-local Mouse = LocalPlayer:GetMouse()
+local UserInputService = game:GetService("UserInputService")
 
--- Settings
-local triggerKey = Enum.UserInputType.MouseButton3  -- Middle mouse button to hold for triggerbot
-local enabled = false
 local tool = nil
-
+local enabled = false
 local lastFireTime = 0
-local fireDelay = 0.03  -- 30 milliseconds delay
+local fireDelay = 0 -- Fire delay, set back to original value (0.005 for fast firing)
 
--- Function to find if mouse is over an enemy hitbox
+-- List of valid hitboxes (can add or remove parts here)
+local validParts = {
+    Head = true,
+    Torso = true,
+    UpperTorso = true,
+    LowerTorso = true,
+}
+
+-- Prediction time function based on enemy velocity
+local function getPredictionTime(player)
+    local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return 0.03 end  -- Shorter prediction time (smaller prediction)
+    local velocity = root.Velocity
+    local speed = velocity.Magnitude
+    -- Reduce the impact of the speed on prediction time (smaller time = smaller prediction)
+    return 0.03 + math.clamp(speed / 250, 0, 0.05)  -- Even smaller prediction time
+end
+
+-- Get the target under the mouse and predict its future position
 local function getTargetUnderMouse()
     local target = Mouse.Target
     if not target then return nil end
@@ -21,77 +37,89 @@ local function getTargetUnderMouse()
     if not character then return nil end
 
     local player = Players:GetPlayerFromCharacter(character)
-    if not player then return nil end
-    if player == LocalPlayer then return nil end  -- Ignore self
+    if not player or player == LocalPlayer then return nil end
 
-    -- Check if the target is a valid hitbox part (e.g., "Head", "Torso", or any part in character)
-    local validParts = {
-        Head = true,
-        Torso = true,
-        UpperTorso = true,
-        LowerTorso = true,
-        ["Left Arm"] = true,
-        ["Right Arm"] = true,
-        ["Left Leg"] = true,
-        ["Right Leg"] = true,
-    }
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not root then return nil end
+
+    local velocity = root.Velocity
+    local predictTime = getPredictionTime(player)
+
+    -- Predict where the enemy will be based on their velocity
+    local predictedPosition = root.Position + velocity * predictTime
+
+    -- Check if the target is within a valid hitbox part
     if validParts[target.Name] then
-        return player, target
-    else
-        return nil
+        -- Check distance between predicted and current position, only fire if within range
+        local distance = (predictedPosition - target.Position).Magnitude
+        if distance < 6 then
+            return player, target, predictedPosition
+        end
     end
+
+    return nil
 end
 
--- Function to "fire" the equipped tool
+-- Fire the tool when triggered
 local function fireTool()
-    if not tool then return end
-    if tool:IsA("Tool") then
-        -- Activate the tool (simulate shooting)
+    if tool and tool:IsA("Tool") then
         tool:Activate()
     end
 end
 
--- Listen to tool equips to keep reference updated
-LocalPlayer.CharacterAdded:Connect(function(char)
-    char.ChildAdded:Connect(function(child)
-        if child:IsA("Tool") then
-            tool = child
-        end
-    end)
-end)
-
--- Also get tool if already equipped on script start
-local character = LocalPlayer.Character
-if character then
+-- Update tool when a new one is equipped
+local function updateTool(character)
+    tool = nil
+    if not character then return end
     for _, child in pairs(character:GetChildren()) do
         if child:IsA("Tool") then
             tool = child
             break
         end
     end
+    character.ChildAdded:Connect(function(child)
+        if child:IsA("Tool") then
+            tool = child
+        end
+    end)
+    character.ChildRemoved:Connect(function(child)
+        if child == tool then
+            tool = nil
+        end
+    end)
 end
 
--- Listen for key press/release to enable/disable triggerbot
+-- Setup to detect key inputs for triggerbot
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
-    if input.UserInputType == triggerKey then
+    if input.UserInputType == Enum.UserInputType.MouseButton3 then
         enabled = true
     end
 end)
 
 UserInputService.InputEnded:Connect(function(input, gameProcessed)
     if gameProcessed then return end
-    if input.UserInputType == triggerKey then
+    if input.UserInputType == Enum.UserInputType.MouseButton3 then
         enabled = false
     end
 end)
 
--- Main loop: when enabled, check if mouse is over enemy hitbox and fire with delay
+-- Handle character respawn and tool updates
+LocalPlayer.CharacterAdded:Connect(function(character)
+    updateTool(character)
+end)
+
+if LocalPlayer.Character then
+    updateTool(LocalPlayer.Character)
+end
+
+-- Main Loop to check and fire with proper delay
 RunService.RenderStepped:Connect(function()
     if enabled and tool then
-        local player, part = getTargetUnderMouse()
-        if player and part then
+        local player, part, predictedPosition = getTargetUnderMouse()
+        if player and predictedPosition then
             local currentTime = tick()
+            -- Only fire if enough time has passed since the last shot (based on fireDelay)
             if currentTime - lastFireTime >= fireDelay then
                 fireTool()
                 lastFireTime = currentTime
